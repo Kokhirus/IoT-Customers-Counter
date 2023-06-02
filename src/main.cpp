@@ -7,24 +7,90 @@ WiFiInterface *wifi;
 
 #define MQTTCLIENT_QOS2 1
  
-int arrivedcount = 0;
+MQTT::Client<MQTTNetwork, Countdown>* client_ptr;
+
+Thread thread_customers_cnt;
+char* customers_amount_topic = "Kokhirus/feeds/iot.customers";
+char* shop_opened_topic = "Kokhirus/feeds/iot.shop-opened";
+int customers_amount = 40;
+volatile bool shop_opened = true;
+
+void post_message(char *topic, char *msg)
+{
+    MQTT::Message message;
+    // QoS 0
+    char buf[100];
+    sprintf(buf, msg, "\r\n");
+    message.qos = MQTT::QOS0;
+    message.retained = false;
+    message.dup = false;
+    message.payload = (void *)buf;
+    message.payloadlen = strlen(buf) + 1;
+    (*client_ptr).publish(topic, message);
+    printf("Posted message: %s\r\n", msg);
+}
  
+void customers_amount_handler() {
+    char msg[5];
+    while(true) {
+        if(!shop_opened) {
+            //thread_sleep_for(5000);
+            continue;
+        }
+        customers_amount += rand()%5;
+        sprintf(msg, "%d", customers_amount);
+        post_message(customers_amount_topic, msg);
+        thread_sleep_for(10000);
+    }
+}
+
+int str_to_int(int len, char* str) {
+    int r3salt = 0;
+    for (int i = 0; i < len; ++i) {
+        r3salt += (str[i] - '0') * pow(10, (len - 1));
+        --len;
+    }
+    return r3salt;
+}
+
+void customers_amount_listener(MQTT::MessageData& md)
+{
+    MQTT::Message &message = md.message;
+    printf("customers_amount_listener: ");
+    printf("Payload %.*s\r\n", message.payloadlen, (char*)message.payload);
+}
+
+void shop_opened_listener(MQTT::MessageData& md)
+{
+    MQTT::Message &message = md.message;
+    char *content = (char *)message.payload;
+
+    printf("shop_opened_listener: ");
+    printf("Payload %.*s\r\n", message.payloadlen, content);
+
+    shop_opened = str_to_int(1, content);
+    //printf("shop_opened now equals %d\r\n", shop_opened);
+    if(!shop_opened) {
+        customers_amount = 0;
+        post_message(customers_amount_topic, "0");
+    }
+}
+
 void messageArrived(MQTT::MessageData& md)
 {
     MQTT::Message &message = md.message;
     printf("Message arrived: qos %d, retained %d, dup %d, packetid %d\r\n", message.qos, message.retained, message.dup, message.id);
     printf("Payload %.*s\r\n", message.payloadlen, (char*)message.payload);
-    ++arrivedcount;
 }
  
 void mqtt_demo(NetworkInterface *net)
 {
     float version = 0.6;
-    char* topic = "Kokhirus/feeds/customers";
  
     MQTTNetwork network(net);
     MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
- 
+    client_ptr = &client;
+
     char* hostname = "52.54.110.50";
     int port = 1883;
  
@@ -40,17 +106,25 @@ void mqtt_demo(NetworkInterface *net)
     data.MQTTVersion = 3;
     data.clientID.cstring = "2a617592b917";
     data.username.cstring = "Kokhirus";
-    data.password.cstring = "aio_xxAW68ijaKPHAJZxq6ryQB2sDcVh";
+    data.password.cstring = "aio_veME64C0nrUnPwTmNNWYkTwkOTHy";
     if ((rc = client.connect(data)) != 0)
         printf("rc from MQTT connect is %d\r\n", rc);
  
-    if ((rc = client.subscribe(topic, MQTT::QOS2, messageArrived)) != 0)
-        printf("rc from MQTT subscribe is %d\r\n", rc);
- 
+    if ((rc = client.subscribe(customers_amount_topic, MQTT::QOS2, customers_amount_listener)) != 0)
+        printf("rc from MQTT subscribe customers_amount_topic is %d\r\n", rc);
+
+    if ((rc = client.subscribe(shop_opened_topic, MQTT::QOS2, shop_opened_listener)) != 0)
+        printf("rc from MQTT shop_opened_topic subscribe is %d\r\n", rc);
+
+    thread_customers_cnt.start(customers_amount_handler);
+    
     while (true)
         client.yield(100);
  
-    if ((rc = client.unsubscribe(topic)) != 0)
+    if ((rc = client.unsubscribe(customers_amount_topic)) != 0)
+        printf("rc from unsubscribe was %d\r\n", rc);
+
+    if ((rc = client.unsubscribe(shop_opened_topic)) != 0)
         printf("rc from unsubscribe was %d\r\n", rc);
  
     if ((rc = client.disconnect()) != 0)
@@ -58,7 +132,7 @@ void mqtt_demo(NetworkInterface *net)
  
     network.disconnect();
  
-    printf("Version %.2f: finish %d msgs\r\n", version, arrivedcount);
+    printf("Version %.2f: finish\r\n", version);
  
     return;
 }
