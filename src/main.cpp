@@ -6,13 +6,20 @@
 WiFiInterface *wifi;
 
 #define MQTTCLIENT_QOS2 1
- 
+
+#define FRONT_MOTION_PIN  D5
+#define REAR_MOTION_PIN  D6
+
+DigitalIn front_sensor(FRONT_MOTION_PIN);
+DigitalIn rear_sensor(REAR_MOTION_PIN);
+
 MQTT::Client<MQTTNetwork, Countdown>* client_ptr;
 
 Thread thread_customers_cnt;
+Thread thread_customers_sensor;
 char* customers_amount_topic = "Kokhirus/feeds/iot.customers";
 char* shop_opened_topic = "Kokhirus/feeds/iot.shop-opened";
-int customers_amount = 40;
+volatile int customers_amount = 40;
 volatile bool shop_opened = true;
 
 void post_message(char *topic, char *msg)
@@ -29,7 +36,29 @@ void post_message(char *topic, char *msg)
     (*client_ptr).publish(topic, message);
     printf("Posted message: %s\r\n", msg);
 }
- 
+
+void customers_sensor_handler() {
+    while (true) {
+        if (front_sensor.read() != 0 && rear_sensor.read() != 0) continue;
+        if (front_sensor.read() == 0) {
+            while (rear_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
+                thread_sleep_for(20);
+            while (rear_sensor.read() == 0)
+                thread_sleep_for(20);
+            ++customers_amount;
+            printf("Customer has entered. %d in total\n", customers_amount);
+        }
+        else {
+            while (front_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
+                thread_sleep_for(20);
+            while (front_sensor.read() == 0)
+                thread_sleep_for(20);
+            --customers_amount;
+            printf("Customer has left. %d in total\n", customers_amount);
+        }
+    }
+}
+
 void customers_amount_handler() {
     char msg[5];
     while(true) {
@@ -37,7 +66,7 @@ void customers_amount_handler() {
             //thread_sleep_for(5000);
             continue;
         }
-        customers_amount += rand()%5;
+        //customers_amount += rand()%5;
         sprintf(msg, "%d", customers_amount);
         post_message(customers_amount_topic, msg);
         thread_sleep_for(10000);
@@ -116,6 +145,7 @@ void mqtt_demo(NetworkInterface *net)
     if ((rc = client.subscribe(shop_opened_topic, MQTT::QOS2, shop_opened_listener)) != 0)
         printf("rc from MQTT shop_opened_topic subscribe is %d\r\n", rc);
 
+    thread_customers_sensor.start(customers_sensor_handler);
     thread_customers_cnt.start(customers_amount_handler);
     
     while (true)
@@ -191,8 +221,6 @@ int scan_demo(WiFiInterface *wifi)
     return count;
 }
 
-DigitalIn button(USER_BUTTON);
-
 int main()
 {
     printf("WiFi example\n");
@@ -214,7 +242,6 @@ int main()
         return -1;
     }
 
-
     printf("Success\n\n");
     printf("MAC: %s\n", wifi->get_mac_address());
     SocketAddress a;
@@ -231,3 +258,25 @@ int main()
 
     printf("\nDone\n");
 }
+
+// int main() {
+//     while (true) {
+//         if (front_sensor.read() != 0 && rear_sensor.read() != 0) continue;
+//         if (front_sensor.read() == 0) {
+//             while (rear_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
+//                 thread_sleep_for(20);
+//             while (rear_sensor.read() == 0)
+//                 thread_sleep_for(20);
+//             ++customers_amount;
+//             printf("Customer has entered. %d in total\n", customers_amount);
+//         }
+//         else {
+//             while (front_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
+//                 thread_sleep_for(20);
+//             while (front_sensor.read() == 0)
+//                 thread_sleep_for(20);
+//             --customers_amount;
+//             printf("Customer has left. %d in total\n", customers_amount);
+//         }
+//     }
+// }
