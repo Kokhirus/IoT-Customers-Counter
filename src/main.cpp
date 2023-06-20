@@ -17,9 +17,11 @@ MQTT::Client<MQTTNetwork, Countdown>* client_ptr;
 
 Thread thread_customers_cnt;
 Thread thread_customers_sensor;
+Thread thread_shop_opened;
 char* customers_amount_topic = "Kokhirus/feeds/iot.customers";
 char* shop_opened_topic = "Kokhirus/feeds/iot.shop-opened";
-volatile int customers_amount = 40;
+char* open_checker_topic = "Kokhirus/feeds/iot.open-checker";
+volatile int customers_amount = 0;
 volatile bool shop_opened = true;
 
 void post_message(char *topic, char *msg)
@@ -34,28 +36,35 @@ void post_message(char *topic, char *msg)
     message.payload = (void *)buf;
     message.payloadlen = strlen(buf) + 1;
     (*client_ptr).publish(topic, message);
-    printf("Posted message: %s\r\n", msg);
+    printf("Posted a message: %s\r\n", msg);
+}
+
+void sensor(DigitalIn sens1, DigitalIn sens2, bool inc) {
+    int wait_time = 0;
+    while ((sens2.read() != 0 || (sens1.read() == 0 && sens2.read() == 0)) && wait_time < 50) {
+        ++wait_time;
+        thread_sleep_for(20);
+    }
+    if (wait_time >= 50) {
+        printf("Customer hasnt entered. Waiting\n");
+        return;
+    }
+    while (sens2.read() == 0)
+        thread_sleep_for(20);
+    printf("Update. Now there are %d customers\n", (inc ? ++customers_amount : --customers_amount));
+    if (customers_amount < 0) {
+        printf("Counter has reached negative number. Restoring to default (0)\r\n");
+        customers_amount = 0;
+    }
 }
 
 void customers_sensor_handler() {
-    while (true) {
+    while(true) {
         if (front_sensor.read() != 0 && rear_sensor.read() != 0) continue;
-        if (front_sensor.read() == 0) {
-            while (rear_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
-                thread_sleep_for(20);
-            while (rear_sensor.read() == 0)
-                thread_sleep_for(20);
-            ++customers_amount;
-            printf("Customer has entered. %d in total\n", customers_amount);
-        }
-        else {
-            while (front_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0))
-                thread_sleep_for(20);
-            while (front_sensor.read() == 0)
-                thread_sleep_for(20);
-            --customers_amount;
-            printf("Customer has left. %d in total\n", customers_amount);
-        }
+        if (front_sensor.read() == 0)
+            sensor(front_sensor, rear_sensor, true);
+        else
+            sensor(rear_sensor, front_sensor, false);
     }
 }
 
@@ -63,12 +72,30 @@ void customers_amount_handler() {
     char msg[5];
     while(true) {
         if(!shop_opened) {
-            //thread_sleep_for(5000);
+            post_message(customers_amount_topic, "0");
+            thread_sleep_for(10000);
             continue;
         }
         //customers_amount += rand()%5;
         sprintf(msg, "%d", customers_amount);
+        printf("From customers_amount_handler:\r\n");
         post_message(customers_amount_topic, msg);
+        thread_sleep_for(10000);
+    }
+}
+
+void shop_opened_handler() {
+    while(true) {
+        printf("From shop_opened_handler:\r\n");
+        char a[5];
+        if (shop_opened){
+            sprintf(a, "%d", 1);
+            post_message(open_checker_topic, a);
+        }
+        else{
+            sprintf(a, "%d", 0);
+            post_message(open_checker_topic, a);
+        }
         thread_sleep_for(10000);
     }
 }
@@ -99,8 +126,9 @@ void shop_opened_listener(MQTT::MessageData& md)
 
     shop_opened = str_to_int(1, content);
     //printf("shop_opened now equals %d\r\n", shop_opened);
+    customers_amount = 0;
     if(!shop_opened) {
-        customers_amount = 0;
+        printf("From shop_opened_listener:\r\n");
         post_message(customers_amount_topic, "0");
     }
 }
@@ -135,7 +163,7 @@ void mqtt_demo(NetworkInterface *net)
     data.MQTTVersion = 3;
     data.clientID.cstring = "2a617592b917";
     data.username.cstring = "Kokhirus";
-    data.password.cstring = "aio_veME64C0nrUnPwTmNNWYkTwkOTHy";
+    data.password.cstring = "aio_OsYD103f8kRRmnD1kqPzTNsN9ghR";
     if ((rc = client.connect(data)) != 0)
         printf("rc from MQTT connect is %d\r\n", rc);
  
@@ -144,9 +172,18 @@ void mqtt_demo(NetworkInterface *net)
 
     if ((rc = client.subscribe(shop_opened_topic, MQTT::QOS2, shop_opened_listener)) != 0)
         printf("rc from MQTT shop_opened_topic subscribe is %d\r\n", rc);
+    
+    {
+        char a[5];
+        sprintf(a, "%d", 1);
+        post_message(shop_opened_topic, a);
+    }
 
     thread_customers_sensor.start(customers_sensor_handler);
+    thread_sleep_for(1000);
     thread_customers_cnt.start(customers_amount_handler);
+    thread_sleep_for(1000);
+    thread_shop_opened.start(shop_opened_handler);
     
     while (true)
         client.yield(100);
@@ -258,6 +295,53 @@ int main()
 
     printf("\nDone\n");
 }
+
+
+
+// int main () {
+//     while(true) {
+//         if (front_sensor.read() != 0 && rear_sensor.read() != 0) continue;
+//         if (front_sensor.read() == 0)
+//             sensor(front_sensor, rear_sensor, true);
+//         else
+//             sensor(rear_sensor, front_sensor, false);
+//     }
+// }
+
+// int main() {
+//     while (true) {
+//         int wait_time = 0;
+//         if (front_sensor.read() != 0 && rear_sensor.read() != 0) continue;
+//         if (front_sensor.read() == 0) {
+//             while ((rear_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0)) && wait_time < 50) {
+//                 ++wait_time;
+//                 thread_sleep_for(20);
+//             }
+//             if (wait_time >= 50) {
+//                 printf("Customer hasnt entered. ripbozo\n");
+//                 continue;
+//             }
+//             while (rear_sensor.read() == 0)
+//                 thread_sleep_for(20);
+//             ++customers_amount;
+//             printf("Customer has entered. %d in total\n", customers_amount);
+//         }
+//         else {
+//             while ((front_sensor.read() != 0 || (front_sensor.read() == 0 && rear_sensor.read() == 0)) && wait_time < 50) {
+//                 ++wait_time;
+//                 thread_sleep_for(20);
+//             }
+//             if (wait_time >= 50) {
+//                 printf("Customer hasnt left. ripbozo\n");
+//                 continue;
+//             }
+//             while (front_sensor.read() == 0)
+//                 thread_sleep_for(20);
+//             --customers_amount;
+//             printf("Customer has left. %d in total\n", customers_amount);
+//         }
+//     }
+// }
 
 // int main() {
 //     while (true) {
